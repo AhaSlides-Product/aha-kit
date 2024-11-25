@@ -1,0 +1,39 @@
+{
+  "name": "@ahaslides-product/aha-kit",
+  "version": "0.1.0",
+  "main": "index.js",
+  "files": [
+    "stores"
+  ],
+  "scripts": {
+    "test": "jest",
+    "release-with-bump-version": "standard-version && git push --follow-tags && npm publish",
+    "release": "npm publish"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AhaSlides-Product/aha-kit.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "keywords": [
+    "cache",
+    "cache aside",
+    "readthrough"
+  ],
+  "author": "Peter",
+  "license": "MIT",
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "lru-cache": "^11.0.2",
+    "redis-support-transaction": "npm:redis@^4.7.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "standard-version": "^9.5.0"
+  },
+  "jest": {
+    "testEnvironment": "node"
+  }
+}
