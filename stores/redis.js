@@ -1,5 +1,8 @@
 const redis = require('redis-support-transaction')
 const { generateRandomString } = require('./random')
+const {
+  jsonMarsh,
+} = require('./encode')
 
 // lock impl requirements
 // - eventually can aquire
@@ -90,44 +93,7 @@ const wrapWithOptimisticLock = ({ masterClient, funcNeedClientAndKey, key }) => 
   })
 }
 
-const needsMarshalling = (value) => {
-  return typeof value !== 'string' && typeof value !== 'number'
-}
-
-const safeParseJSON = (value) => {
-  if (!isNaN(value)) {
-    return Number(value)
-  }
-
-  if (value === 'true' || value === 'false') {
-    return value === 'true'
-  }
-
-  if (value?.startsWith('{') || value?.startsWith('[')) {
-    return JSON.parse(value)
-  }
-
-  // Default: keep as string
-  return value
-}
-
-const jsonMarsh = {
-  marshall: (obj) => {
-    if (!needsMarshalling(obj)) {
-      return obj
-    }
-    return JSON.stringify(obj)
-  },
-  unmarshall: (biData) => {
-    if (biData == null) {
-      return null
-    }
-    return safeParseJSON(biData)
-  },
-}
-
 const get = (unmarshallFunc) => async ({ client, key }) => {
-  console.log('=================', { key })
   const biData = await client.get(key)
   return unmarshallFunc(biData)
 }
@@ -136,23 +102,33 @@ const set = (marshallFunc) => async ({ client, key, value, ttlMs }) => {
   await client.set(key, marshallFunc(value), { PX: ttlMs })
 }
 
-const hset = (marshallFunc) => async ({ client, key, field, value}) => {
-  await client.hset(key, field, marshallFunc(value))
+const hSet = (marshallFunc) => async ({ client, key, fieldsValues }) => {
+  const dataToSet = Object.entries(fieldsValues).reduce((accum, [f, v]) => {
+    accum.push(f)
+    accum.push(marshallFunc(v))
+    return accum
+  }, [])
+
+  await client.hSet(key, dataToSet)
 }
 
-const hdel = async ({ client, key, field }) => {
-  await client.hdel(key, field)
+const hDel = async ({ client, key, field }) => {
+  await client.hDel(key, field)
 }
 
-const hget = (unmarshallFunc) => async ({ client, key, field }) => {
-  const biData = await client.hget(key, field)
+const hGet = (unmarshallFunc) => async ({ client, key, field }) => {
+  const biData = await client.hGet(key, field)
   return unmarshallFunc(biData)
 }
 
-const hgetall = (unmarshallFunc) => async ({ client, key, field }) => {
-  const keysValues = await client.hgetall(key, field)
-  return keysValues.reduce((accum, key, value) => {
-    accum[key] = unmarshallFunc(value)
+const hGetAll = (unmarshallFunc) => async ({ client, key }) => {
+  const keysValues = await client.hGetAll(key)
+  if (keysValues == null ||
+      typeof keysValues != 'object' || Object.values(keysValues).length <= 0) {
+    return undefined
+  }
+  return Object.entries(keysValues).reduce((accum, [field, value]) => {
+    accum[field] = unmarshallFunc(value)
     return accum
   }, {})
 }
@@ -204,10 +180,10 @@ const createClient = ({ host = 'localhost', port = 6379 }) => {
 module.exports = {
   get,
   set,
-  hset,
-  hdel,
-  hget,
-  hgetall,
+  hSet,
+  hDel,
+  hGet,
+  hGetAll,
   createClient,
   simpleLock,
   wrapWithOptimisticLock,
