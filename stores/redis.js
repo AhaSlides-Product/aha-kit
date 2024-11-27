@@ -112,8 +112,8 @@ const hSet = (marshallFunc) => async ({ client, key, fieldsValues }) => {
   await client.hSet(key, dataToSet)
 }
 
-const hDel = async ({ client, key, field }) => {
-  await client.hDel(key, field)
+const hDel = async ({ client, key, fields }) => {
+  await client.hDel(key, ...fields)
 }
 
 const hGet = (unmarshallFunc) => async ({ client, key, field }) => {

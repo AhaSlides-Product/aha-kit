@@ -47,8 +47,13 @@ const create = ({ inAppStore, redisReplicaClient, redisMasterClient }) => {
     }
   }
 
-  const redisCacheOnlyReadThrough = async ({ func, key, ttlMs }) => {
-    let cached = redisCacheReadThrough({ func, ttlMs, inAppTtlMs: 0 })
+  const redisCacheOnlyReadThrough = async ({ funcWoArgs, key, ttlMs }) => {
+    let cached = redisCacheReadThrough({
+      func: funcWoArgs,
+      key,
+      ttlMs,
+      inAppTtlMs: 0,
+    })()
     if (isPromise(cached)) {
       cached = await cached
     }
