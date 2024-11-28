@@ -1,8 +1,5 @@
 const redis = require('redis-support-transaction')
 const { generateRandomString } = require('./random')
-const {
-  jsonMarsh,
-} = require('./encode')
 
 // lock impl requirements
 // - eventually can aquire
@@ -94,22 +91,35 @@ const wrapWithOptimisticLock = ({ masterClient, funcNeedClientAndKey, key }) => 
 }
 
 const get = (unmarshallFunc) => async ({ client, key }) => {
-  const biData = await client.get(key)
+  const biData = await client.get(client.commandOptions({ returnBuffers: true }), key)
   return unmarshallFunc(biData)
 }
 
 const set = (marshallFunc) => async ({ client, key, value, ttlMs }) => {
-  await client.set(key, marshallFunc(value), { PX: ttlMs })
+  const dataToSet = await marshallFunc(value)
+  return client.set(key, dataToSet, { PX: ttlMs })
+}
+
+const del = async ({ client, key }) => {
+  return client.del(key)
 }
 
 const hSet = (marshallFunc) => async ({ client, key, fieldsValues }) => {
-  const dataToSet = Object.entries(fieldsValues).reduce((accum, [f, v]) => {
-    accum.push(f)
-    accum.push(marshallFunc(v))
+  const { fields, marshallings } = Object.entries(fieldsValues).reduce((accum, [f, v]) => {
+    accum.fields.push(f)
+    accum.marshallings.push(marshallFunc(v))
+    return accum
+  }, { fields: [], marshallings: [] })
+
+  const marshalleds = await Promise.all(marshallings)
+
+  const dataToSet = fields.reduce((accum, field, fieldIdx) => {
+    accum.push(field)
+    accum.push(marshalleds[fieldIdx])
     return accum
   }, [])
 
-  await client.hSet(key, dataToSet)
+  return client.hSet(key, dataToSet)
 }
 
 const hDel = async ({ client, key, fields }) => {
@@ -134,24 +144,24 @@ const hGetAll = (unmarshallFunc) => async ({ client, key }) => {
 }
 
 // need wrapped by transaction to ensure atomic
-const getOrSet = async ({ client, funcWoArgs, key, ttlMs }) => {
-  let value = await get(jsonMarsh.unmarshall)({ client, key })
+const getOrSet = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoArgs, key, ttlMs }) => {
+  let value = await get(unmarshallFunc)({ client, key })
   if (value == null) {
     value = funcWoArgs()
     if (value instanceof Promise) {
       value = await value
     }
 
-    await set(jsonMarsh.marshall)({ client, key, value, ttlMs })
+    await set(marshallFunc)({ client, key, value, ttlMs })
   }
   return value
 }
 
 // read from replica first, if not found
 // do getOrSetFromMaster within a transaction
-const cacheAsideFunc = ({ funcWoArgs, key, ttlMs }) => {
+const cacheAsideFunc = ({ marshallFunc, unmarshallFunc }) => ({ funcWoArgs, key, ttlMs }) => {
   return async ({ replicaClient, masterClient }) => {
-    const value = await get(jsonMarsh.unmarshall)({
+    const value = await get(unmarshallFunc)({
       client: replicaClient,
       key,
     })
@@ -160,7 +170,10 @@ const cacheAsideFunc = ({ funcWoArgs, key, ttlMs }) => {
     }
 
     const getOrSetFromMaster = ({ client, key }) => {
-      return getOrSet({ client, funcWoArgs, key, ttlMs })
+      return getOrSet({
+        marshallFunc,
+        unmarshallFunc,
+      })({ client, funcWoArgs, key, ttlMs })
     }
     return wrapWithOptimisticLock({
       masterClient,
@@ -178,13 +191,17 @@ const createClient = ({ host = 'localhost', port = 6379 }) => {
 }
 
 module.exports = {
+  createClient,
+  //
   get,
   set,
+  del,
+  getOrSet,
   hSet,
   hDel,
   hGet,
   hGetAll,
-  createClient,
+  //
   simpleLock,
   wrapWithOptimisticLock,
   wrapWithPessimisticSimpleLock,

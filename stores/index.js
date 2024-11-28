@@ -1,12 +1,41 @@
 const {
   createClient: createRedisClient,
-  cacheAsideFunc: redisCacheAsideFunc,
+  cacheAsideFunc,
 } = require('./redis')
 const {
   createStore: createInAppStore,
   remove: removeInApp,
   cacheAsideFunc: inAppCacheAsideFunc,
 } = require('./inAppLru')
+const {
+  msgpackEncDec,
+} = require('./encode')
+const {
+  snappyCompr,
+} = require('./compress')
+
+const msgpackSnappyMarsh = {
+  marshall: (obj) => {
+    if (obj == null) {
+      throw new Error('marshall null data')
+    }
+    return snappyCompr.compressAsync({
+      biData: msgpackEncDec.encode(obj),
+    })
+  },
+  unmarshall: async (biData) => {
+    if (biData == null) {
+      return null
+    }
+    const uncompressed = await snappyCompr.uncompressAsync({ biData })
+    return msgpackEncDec.decode(uncompressed)
+  }
+}
+
+const redisCacheAsideFunc = cacheAsideFunc({
+  marshallFunc: msgpackSnappyMarsh.marshall,
+  unmarshallFunc: msgpackSnappyMarsh.unmarshall,
+})
 
 const isPromise = (value) => {
   return value &&

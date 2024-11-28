@@ -27,7 +27,9 @@
   "dependencies": {
     "lodash": "^4.17.21",
     "lru-cache": "^11.0.2",
-    "redis-support-transaction": "npm:redis@^4.7.0"
+    "msgpack-lite": "^0.1.26",
+    "redis-support-transaction": "npm:redis@^4.7.0",
+    "snappy": "^7.2.2"
   },
   "devDependencies": {
     "jest": "^29.0.0",

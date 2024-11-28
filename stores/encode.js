@@ -1,4 +1,6 @@
-const needsMarshalling = (value) => {
+const msgpack = require('msgpack-lite')
+
+const needEncode = (value) => {
   return typeof value !== 'string' && typeof value !== 'number'
 }
 
@@ -15,27 +17,39 @@ const safeParseJSON = (value) => {
     return JSON.parse(value)
   }
 
-  // Default: keep as string
   return value
 }
 
-const jsonMarsh = {
-  marshall: (obj) => {
-    if (!needsMarshalling(obj)) {
+const jsonEncDec = {
+  encode: (obj) => {
+    if (!needEncode(obj)) {
       return obj
     }
     return JSON.stringify(obj)
   },
-  unmarshall: (biData) => {
-    if (biData == null) {
-      return null
-    }
+  decode: (biData) => {
     return safeParseJSON(biData)
   },
 }
 
+const msgpackEncDec = {
+  encode: (obj) => {
+    if (!needEncode(obj)) {
+      return obj
+    }
+    return msgpack.encode(obj)
+  },
+  decode: (biData) => {
+    if (biData == null) {
+      return null
+    }
+    return msgpack.decode(biData)
+  },
+}
+
 module.exports = {
-  needsMarshalling,
+  needEncode,
   safeParseJSON,
-  jsonMarsh,
+  jsonEncDec,
+  msgpackEncDec,
 }
