@@ -2,6 +2,7 @@ const {
   createClient: createRedisClient,
   cacheAsideFunc,
 } = require('./redis')
+const { isPromise } = require('./promise')
 const {
   createStore: createInAppStore,
   remove: removeInApp,
@@ -36,13 +37,6 @@ const redisCacheAsideFunc = cacheAsideFunc({
   marshallFunc: msgpackSnappyMarsh.marshall,
   unmarshallFunc: msgpackSnappyMarsh.unmarshall,
 })
-
-const isPromise = (value) => {
-  return value &&
-    typeof value === 'object' &&
-    typeof value.then === 'function' &&
-    Promise.resolve(value) === value
-}
 
 const create = ({ inAppStore, redisReplicaClient, redisMasterClient }) => {
   const inAppCacheReadThrough = ({ funcWoArgs, key, ttlMs }) => {

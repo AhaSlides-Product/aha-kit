@@ -1,5 +1,6 @@
 const redis = require('redis-support-transaction')
 const { generateRandomString } = require('./random')
+const { isPromise } = require('./promise')
 
 // lock impl requirements
 // - eventually can aquire
@@ -76,17 +77,22 @@ const wrapWithPessimisticSimpleLock = async ({ masterClient, funcWoArgs, key }) 
 
 // ref: https://redis.io/docs/latest/develop/interact/transactions/#optimistic-locking-using-check-and-set
 const wrapWithOptimisticLock = ({ masterClient, funcNeedClientAndKey, key }) => {
-  return new Promise((res, rej) => {
+  return new Promise((onRes, onRej) => {
     masterClient.executeIsolated(async (isolatedClient) => {
       // if key changed by other (not redis's TTL evict), transaction will abort
       // note: if everyone race to changes forever, we can not ensure key will be set
       await isolatedClient.watch(key)
       const multi = isolatedClient.multi().ping()
 
-      res(funcNeedClientAndKey({ client: isolatedClient, key }))
+      let res = await funcNeedClientAndKey({ client: isolatedClient, key })
+      if (isPromise(res)) {
+        res = await res
+      }
+      onRes(res)
 
-      return multi.exec()
-    }).catch(rej)
+      await multi.exec()
+      isolatedClient.quit()
+    }).catch(onRej)
   })
 }
 
