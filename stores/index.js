@@ -84,10 +84,9 @@ const create = ({ inAppStore, redisReplicaClient, redisMasterClient }) => {
     return cached
   }
 
-  const redisCacheWriteThrough = async ({ data, key, ttlMs }) => {
-    const marshalledData = await msgpackSnappyMarsh.marshall(data)
-    await redisMasterClient.setex(key, ttlMs / 1000, marshalledData)
-    return data
+  const redisCacheWriteThrough = async ({ dataToSet, key, ttlMs }) => {
+    const dataToSet = msgpackSnappyMarsh.marshall(data)
+    return redisMasterClient.set(key, dataToSet, { PX: ttlMs })
   }
 
   return {
