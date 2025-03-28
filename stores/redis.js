@@ -1,6 +1,5 @@
 const redis = require('redis-support-transaction')
 const { generateRandomString } = require('./random')
-const { isPromise } = require('./promise')
 
 // lock impl requirements
 // - eventually can aquire
@@ -75,27 +74,6 @@ const wrapWithPessimisticSimpleLock = async ({ masterClient, funcWoArgs, key }) 
   }
 }
 
-// ref: https://redis.io/docs/latest/develop/interact/transactions/#optimistic-locking-using-check-and-set
-const wrapWithOptimisticLock = ({ masterClient, funcNeedClientAndKey, key }) => {
-  return new Promise((onRes, onRej) => {
-    masterClient.executeIsolated(async (isolatedClient) => {
-      // if key changed by other (not redis's TTL evict), transaction will abort
-      // note: if everyone race to changes forever, we can not ensure key will be set
-      await isolatedClient.watch(key)
-      const multi = isolatedClient.multi().ping()
-
-      let res = await funcNeedClientAndKey({ client: isolatedClient, key })
-      if (isPromise(res)) {
-        res = await res
-      }
-      onRes(res)
-
-      await multi.exec()
-      isolatedClient.quit()
-    }).catch(onRej)
-  })
-}
-
 const get = (unmarshallFunc) => async ({ client, key }) => {
   const biData = await client.get(client.commandOptions({ returnBuffers: true }), key)
   return unmarshallFunc(biData)
@@ -150,21 +128,38 @@ const hGetAll = (unmarshallFunc) => async ({ client, key }) => {
 }
 
 // need wrapped by transaction to ensure atomic
+// ref: https://redis.io/docs/latest/develop/interact/transactions/#optimistic-locking-using-check-and-set
+// note: if everyone race to changes FOREVER, we can not ensure EVENTUALLY the key will be set here
+// in that case, use wrapWithPessimisticSimpleLock
 const getOrSet = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoArgs, key, ttlMs }) => {
   let value = await get(unmarshallFunc)({ client, key })
-  if (value == null) {
-    value = funcWoArgs()
-    if (value instanceof Promise) {
-      value = await value
-    }
-
-    await set(marshallFunc)({ client, key, value, ttlMs })
+  if (value != null) {
+    // we don't need GET-UPDATE-SET here
+    // so, it ok to not wrap GET inside WATCH
+    return value
   }
-  return value
+
+  return new Promise((res, rej) => {
+    client.executeIsolated(async (isolatedClient) => {
+      await isolatedClient.watch(key)
+
+      const multi = isolatedClient.multi()
+
+      value = funcWoArgs()
+      if (value instanceof Promise) {
+        value = await value
+      }
+      await set(marshallFunc)({ client: multi, key, value, ttlMs })
+
+      await multi.exec()
+
+      res(value)
+    }).catch(rej)
+  })
 }
 
 // read from replica first, if not found
-// do getOrSetFromMaster within a transaction
+// do getOrSetFromMaster
 const cacheAsideFunc = ({ marshallFunc, unmarshallFunc }) => ({ funcWoArgs, key, ttlMs }) => {
   return async ({ replicaClient, masterClient }) => {
     const value = await get(unmarshallFunc)({
@@ -175,16 +170,8 @@ const cacheAsideFunc = ({ marshallFunc, unmarshallFunc }) => ({ funcWoArgs, key,
       return value
     }
 
-    const getOrSetFromMaster = ({ client, key }) => {
-      return getOrSet({
-        marshallFunc,
-        unmarshallFunc,
-      })({ client, funcWoArgs, key, ttlMs })
-    }
-    return wrapWithOptimisticLock({
-      masterClient,
-      funcNeedClientAndKey: getOrSetFromMaster,
-      key,
+    return getOrSet({ marshallFunc, unmarshallFunc})({
+      client: masterClient, funcWoArgs, key, ttlMs,
     })
   }
 }
@@ -209,7 +196,6 @@ module.exports = {
   hGetAll,
   //
   simpleLock,
-  wrapWithOptimisticLock,
   wrapWithPessimisticSimpleLock,
   cacheAsideFunc,
 }

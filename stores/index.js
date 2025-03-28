@@ -98,6 +98,8 @@ const create = ({ inAppStore, redisReplicaClient, redisMasterClient }) => {
 }
 
 module.exports = {
+  msgpackSnappyMarsh,
+
   createInAppStore,
   createRedisClient,
   create,
