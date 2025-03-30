@@ -3,7 +3,9 @@ const {
   createClient,
   set, get,
   del,
-  cacheAsideFunc, getOrSet,
+  wrapWithPessimisticSimpleLock,
+  getOrSetWithWithPessimisticLock, getOrSetWithOptimisticLock,
+  cacheAsideFunc,
 } = require('./redis')
 
 const {
@@ -33,7 +35,7 @@ describe('Redis Integration Test', () => {
     unmarshallFunc: msgpackEncDec.decode,
   })
 
-  let getOrSetFunc = getOrSet({
+  let getOrSetFunc = getOrSetWithWithPessimisticLock({
     marshallFunc: msgpackEncDec.encode,
     unmarshallFunc: msgpackEncDec.decode,
   })
@@ -110,17 +112,87 @@ describe('Redis Integration Test', () => {
       expect(gotFromGet).toStrictEqual(value)
     })
 
+    describe('concurrent cacheAside', () => {
+      const keyTtlMs = 10
+      const getFromDbMs = 100
+      const delayAfterFirstStart = Math.round(getFromDbMs / 3)
+
+      const racingGet = async ({ aquireLockTimeoutMs }) => {
+        const firstGet = cacheAside({
+          client: masterClient,
+          funcWoArgs: async () => {
+            await sleepMs(getFromDbMs)
+            return value
+          },
+          key, ttlMs: keyTtlMs,
+          aquireLockTimeoutMs,
+        }) ({ replicaClient, masterClient })
+
+        await sleepMs(delayAfterFirstStart)
+
+        const secondGet = cacheAside({
+          client: masterClient,
+          funcWoArgs: async () => {
+            await sleepMs(getFromDbMs)
+            return value
+          },
+          key, ttlMs: keyTtlMs,
+          aquireLockTimeoutMs,
+        })({ replicaClient, masterClient })
+
+        return [firstGet, secondGet]
+      }
+
+      test('fetch func faster than aquireLockTimeoutMs must work', async () => {
+        const [firstGet, secondGet] = await racingGet({
+          aquireLockTimeoutMs: 30000,
+        })
+        const secondGot = await secondGet
+        expect(secondGot).toStrictEqual(value)
+
+        const firstGot = await firstGet
+        expect(firstGot).toStrictEqual(value)
+
+        const gotFromGet = await getFunc({ client: masterClient, key })
+        expect(gotFromGet).toStrictEqual(value)
+      })
+
+      test('fetch func SLOWER than aquireLockTimeoutMs must work', async () => {
+        const [firstGet, secondGet] = await racingGet({
+          aquireLockTimeoutMs: Math.round(getFromDbMs/3),
+        })
+
+        await expect(secondGet).rejects.toThrow("aquire failed")
+
+        const firstGot = await firstGet
+        expect(firstGot).toStrictEqual(value)
+
+        const gotFromGet = await getFunc({ client: masterClient, key })
+        expect(gotFromGet).toStrictEqual(value)
+      })
+    })
 
     describe('not found at replica, getOrSet from master', () => {
+      const lockWrapper = ({ funcWoArgs, masterClient, key }) => {
+        return wrapWithPessimisticSimpleLock({
+          masterClient,
+          funcWoArgs,
+          key,
+          lockTimeMs: 5000,
+          aquireLockTimeoutMs: 3000,
+        })
+      }
+
       test('should return if found by GET', async () => {
         await setFunc({ client: masterClient, key, value, ttlMs: 1000 })
 
         let beCalled = false
         const got = await getOrSetFunc({
-          client: masterClient,
+          masterClient,
           funcWoArgs: () => { beCalled = true },
           key,
           ttlMs: 1000,
+          lockWrapper,
         })
 
         expect(beCalled).toStrictEqual(false)
@@ -129,10 +201,11 @@ describe('Redis Integration Test', () => {
 
       test('should SET success if no change at middle of transaction', async () => {
         const got = await getOrSetFunc({
-          client: masterClient,
+          masterClient,
           funcWoArgs: () => value,
           key,
           ttlMs: 1000,
+          lockWrapper,
         })
         expect(got).toStrictEqual(value)
 
@@ -145,15 +218,26 @@ describe('Redis Integration Test', () => {
         const getFromDbMs = 100
         const delayAfterFirstStart = Math.round(getFromDbMs / 3)
 
+        let getOrSetFunc = getOrSetWithOptimisticLock({
+          marshallFunc: msgpackEncDec.encode,
+          unmarshallFunc: msgpackEncDec.decode,
+        })
+
         const racing = Promise.all([
           getOrSetFunc({
             client: masterClient,
-            funcWoArgs: () => sleepMs(getFromDbMs),
+            funcWoArgs: async () => {
+              await sleepMs(getFromDbMs)
+              return value
+            },
             key, ttlMs: keyTtlMs}),
-          sleepMs(delayAfterFirstStart),
           getOrSetFunc({
             client: masterClient,
-            funcWoArgs: () => sleepMs(getFromDbMs),
+            funcWoArgs: async () => {
+              await sleepMs(delayAfterFirstStart),
+              await sleepMs(getFromDbMs)
+              return value
+            },
             key, ttlMs: keyTtlMs}),
         ])
 

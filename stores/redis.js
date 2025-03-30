@@ -1,5 +1,6 @@
 const redis = require('redis-support-transaction')
 const { generateRandomString } = require('./random')
+const { tryWithBackoffRetry } = require('./retry')
 
 // lock impl requirements
 // - eventually can aquire
@@ -9,21 +10,35 @@ const { generateRandomString } = require('./random')
 //
 // consider use redlock when run in cluster mode
 // ref: https://github.com/mike-marcacci/node-redlock
+class AquireLockError extends Error {
+  constructor(message) {
+    super(message)
+  }
+}
+
 const simpleLock = {
   lockName: (name) => `simpleLock.${name}`,
-  aquire: async ({ masterClient, name, ttlMs }) => {
+  aquire: ({ retryTimeoutMs }) => async ({ masterClient, name, ttlMs }) => {
+    const lockName = simpleLock.lockName(name)
     // secret used here to ensure ownership
     const secret = generateRandomString(8) + Date.now()
-    const lockName = simpleLock.lockName(name)
 
-    const result = await masterClient.set(lockName, secret, { PX: ttlMs, NX: true })
-    if (result === null) {
-      throw new Error('aquire failed')
+    const trySet = async () => {
+      const result = await masterClient.set(lockName, secret, { PX: ttlMs, NX: true })
+      if (result === null) {
+        throw new AquireLockError('aquire failed')
+      }
     }
 
+    await tryWithBackoffRetry({
+      funcWoArgs: trySet,
+      maxTimeMs: retryTimeoutMs,
+      allowedErrorType: AquireLockError,
+    })
+
     return {
-      release: () => simpleLock.release({ masterClient, lockName, secret }),
-      extend: ({ ttlMs: _ttlMs }) => simpleLock.extend({ masterClient, lockName, secret, ttlMs: _ttlMs }),
+      release: () => simpleLock.release({ masterClient, name: lockName, secret }),
+      extend: ({ ttlMs: _ttlMs }) => simpleLock.extend({ masterClient, name: lockName, secret, ttlMs: _ttlMs }),
     }
   },
   release: async ({ masterClient, name, secret }) => {
@@ -54,9 +69,16 @@ const simpleLock = {
   },
 }
 
-const wrapWithPessimisticSimpleLock = async ({ masterClient, funcWoArgs, key }) => {
-  const lockTimeMs = 5000
+const wrapWithPessimisticSimpleLock = async ({
+  masterClient,
+  funcWoArgs,
+  key,
+  lockTimeMs=5000,
+  aquireLockTimeoutMs=30000,
+}) => {
   const { extend, release } = await simpleLock.aquire({
+    retryTimeoutMs: aquireLockTimeoutMs,
+  })({
     masterClient,
     name: simpleLock.lockName(key),
     ttlMs: lockTimeMs,
@@ -67,7 +89,12 @@ const wrapWithPessimisticSimpleLock = async ({ masterClient, funcWoArgs, key }) 
   )
 
   try {
-    return funcWoArgs()
+    let value = funcWoArgs()
+    if (value instanceof Promise) {
+      value = await value
+    }
+
+    return value
   } finally {
     clearInterval(extender)
     release()
@@ -131,7 +158,7 @@ const hGetAll = (unmarshallFunc) => async ({ client, key }) => {
 // ref: https://redis.io/docs/latest/develop/interact/transactions/#optimistic-locking-using-check-and-set
 // note: if everyone race to changes FOREVER, we can not ensure EVENTUALLY the key will be set here
 // in that case, use wrapWithPessimisticSimpleLock
-const getOrSet = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoArgs, key, ttlMs }) => {
+const getOrSetWithOptimisticLock = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoArgs, key, ttlMs }) => {
   let value = await get(unmarshallFunc)({ client, key })
   if (value != null) {
     // we don't need GET-UPDATE-SET here
@@ -158,9 +185,49 @@ const getOrSet = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoAr
   })
 }
 
+const getOrSetWithWithPessimisticLock = ({
+  marshallFunc,
+  unmarshallFunc,
+}) => async ({
+  masterClient,
+  funcWoArgs,
+  key,
+  ttlMs,
+  lockWrapper,
+}) => {
+  const getOrSet = async () => {
+    let value = await get(unmarshallFunc)({ client: masterClient, key })
+    if (value != null) {
+      return value
+    }
+
+    value = funcWoArgs()
+    if (value instanceof Promise) {
+      value = await value
+    }
+    await set(marshallFunc)({ client: masterClient, key, value, ttlMs })
+    return value
+  }
+
+  return lockWrapper({
+    funcWoArgs: getOrSet,
+    masterClient,
+    key,
+  })
+}
+
 // read from replica first, if not found
 // do getOrSetFromMaster
-const cacheAsideFunc = ({ marshallFunc, unmarshallFunc }) => ({ funcWoArgs, key, ttlMs }) => {
+const cacheAsideFunc = ({
+  marshallFunc,
+  unmarshallFunc,
+}) => ({
+  funcWoArgs,
+  key,
+  ttlMs,
+  lockTimeMs=5000,
+  aquireLockTimeoutMs=30000,
+}) => {
   return async ({ replicaClient, masterClient }) => {
     const value = await get(unmarshallFunc)({
       client: replicaClient,
@@ -170,8 +237,25 @@ const cacheAsideFunc = ({ marshallFunc, unmarshallFunc }) => ({ funcWoArgs, key,
       return value
     }
 
-    return getOrSet({ marshallFunc, unmarshallFunc})({
-      client: masterClient, funcWoArgs, key, ttlMs,
+    const lockWrapper = ({ funcWoArgs, masterClient, key }) => {
+      return wrapWithPessimisticSimpleLock({
+        masterClient,
+        funcWoArgs,
+        key,
+        lockTimeMs,
+        aquireLockTimeoutMs,
+      })
+    }
+
+    return getOrSetWithWithPessimisticLock({
+      marshallFunc,
+      unmarshallFunc,
+    })({
+      masterClient,
+      funcWoArgs,
+      key,
+      ttlMs,
+      lockWrapper,
     })
   }
 }
@@ -189,7 +273,8 @@ module.exports = {
   get,
   set,
   del,
-  getOrSet,
+  getOrSetWithWithPessimisticLock,
+  getOrSetWithOptimisticLock,
   hSet,
   hDel,
   hGet,
