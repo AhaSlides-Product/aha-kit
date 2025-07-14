@@ -261,9 +261,13 @@ const cacheAsideFunc = ({
 }
 
 // TODO: get client per key, when run in cluster mode
-const createClient = ({ host = 'localhost', port = 6379 }) => {
+const createClient = ({ host = 'localhost', port = 6379, tls = false }) => {
   return redis.createClient({
-    url: `redis://${host}:${port}`,
+    socket: {
+      host,
+      port,
+      tls
+    }
   })
 }
 
