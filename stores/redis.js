@@ -261,7 +261,7 @@ const cacheAsideFunc = ({
 }
 
 // TODO: get client per key, when run in cluster mode
-const createClient = ({ host = 'localhost', port = 6379, tls = false, maxEntries = 500 }) => {
+const createClient = ({ host = 'localhost', port = 6379, tls = false, ttl = 3600, maxEntries = 500 }) => {
   return redis.createClient({
     socket: {
       host,
@@ -270,8 +270,8 @@ const createClient = ({ host = 'localhost', port = 6379, tls = false, maxEntries
     },
     RESP: 3,
     clientSideCache: {
-      ttl: 0, // Time-to-live (0 = no expiration)
-      maxEntries: maxEntries, // Maximum entries (0 = unlimited)
+      ttl, // Time-to-live (0 = no expiration)
+      maxEntries, // Maximum entries (0 = unlimited)
       evictPolicy: 'LRU', // Eviction policy: "LRU" or "FIFO"
     },
   })
