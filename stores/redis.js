@@ -62,7 +62,7 @@ const simpleLock = {
           return 0
       end
       `
-    const res = await masterClient.eval(script, { keys: [name], arguments: [secret, ttlMs] })
+    const res = await masterClient.eval(script, { keys: [name], arguments: [secret, String(ttlMs)] })
     if (res === 0) {
       throw new Error('extend failed')
     }

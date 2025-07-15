@@ -6,6 +6,7 @@ const {
   wrapWithPessimisticSimpleLock,
   getOrSetWithWithPessimisticLock, getOrSetWithOptimisticLock,
   cacheAsideFunc,
+  simpleLock,
 } = require('./redis')
 
 const {
@@ -62,19 +63,15 @@ describe('Redis Integration Test', () => {
     })
 
     await Promise.all([masterClient.ping(), replicaClient.ping()])
-  }, 10000);
+  }, 60000);
 
   afterAll(async () => {
-    await Promise.all([
-      replicaClient.quit(),
-      masterClient.quit(),
-    ])
+    if (replicaClient) await replicaClient.quit()
+    if (masterClient) await masterClient.quit()
 
-    await Promise.all([
-      replicaContainer.stop(),
-      masterContainer.stop(),
-    ])
-  }, 10000);
+    if (replicaContainer) await replicaContainer.stop()
+    if (masterContainer) await masterContainer.stop()
+  }, 30000);
 
   describe('cacheAsideFunc', () => {
     const key = "key"
@@ -246,6 +243,149 @@ describe('Redis Integration Test', () => {
         const gotFromGet = await getFunc({ client: masterClient, key })
         expect(gotFromGet).toStrictEqual(null)
       })
+    })
+  })
+
+  describe('simpleLock', () => {
+    const lockName = 'test-lock'
+    const ttlMs = 5000
+
+    beforeEach(async () => {
+      await del({ client: masterClient, key: simpleLock.lockName(lockName) })
+    })
+
+    test('should acquire lock successfully', async () => {
+      const lock = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      expect(lock).toHaveProperty('release')
+      expect(lock).toHaveProperty('extend')
+
+      await lock.release()
+    })
+
+    test('should fail to acquire already acquired lock', async () => {
+      const lock1 = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      await expect(
+        simpleLock.aquire({ retryTimeoutMs: 100 })({
+          masterClient,
+          name: lockName,
+          ttlMs
+        })
+      ).rejects.toThrow('aquire failed')
+
+      await lock1.release()
+    })
+
+    test('should release lock successfully', async () => {
+      const lock = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      await lock.release()
+
+      // Should be able to acquire again after release
+      const lock2 = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      await lock2.release()
+    })
+
+    test('should extend lock successfully with correct ttlMs type conversion', async () => {
+      const lock = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs: 1000
+      })
+
+      // This tests the fix from the last commit - ttlMs should be converted to string
+      await expect(lock.extend({ ttlMs: 5000 })).resolves.not.toThrow()
+
+      await lock.release()
+    })
+
+    test('should fail to extend lock with wrong secret', async () => {
+      const lock = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      // Try to extend with wrong secret
+      await expect(
+        simpleLock.extend({
+          masterClient,
+          name: simpleLock.lockName(lockName),
+          secret: 'wrong-secret',
+          ttlMs: 5000
+        })
+      ).rejects.toThrow('extend failed')
+
+      await lock.release()
+    })
+
+    test('should handle concurrent lock acquisition with retry', async () => {
+      const lock1Promise = simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs: 100
+      })
+
+      const lock2Promise = simpleLock.aquire({ retryTimeoutMs: 2000 })({
+        masterClient,
+        name: lockName,
+        ttlMs: 100
+      })
+
+      const lock1 = await lock1Promise
+
+      // Wait for lock1 to expire, then lock2 should acquire
+      await sleepMs(150)
+
+      const lock2 = await lock2Promise
+
+      await lock2.release()
+    })
+
+    test('should fail to release lock with wrong secret', async () => {
+      const lock = await simpleLock.aquire({ retryTimeoutMs: 1000 })({
+        masterClient,
+        name: lockName,
+        ttlMs
+      })
+
+      // Try to release with wrong secret - should throw 'release failed'
+      await expect(
+        simpleLock.release({
+          masterClient,
+          name: simpleLock.lockName(lockName),
+          secret: 'wrong-secret'
+        })
+      ).rejects.toThrow('release failed')
+
+      // Lock should still be held, so new acquisition should fail
+      await expect(
+        simpleLock.aquire({ retryTimeoutMs: 100 })({
+          masterClient,
+          name: lockName,
+          ttlMs
+        })
+      ).rejects.toThrow('aquire failed')
+
+      await lock.release()
     })
   })
 });
