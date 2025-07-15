@@ -1,6 +1,6 @@
 {
   "name": "@ahaslides-product/aha-kit",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "main": "index.js",
   "files": [
     "stores"
@@ -28,7 +28,7 @@
     "lodash": "^4.17.21",
     "lru-cache": "^11.0.2",
     "msgpack-lite": "^0.1.26",
-    "redis-support-transaction": "npm:redis@^4.7.0",
+    "redis-support-transaction": "npm:redis@5.6.0",
     "snappy": "^7.2.2"
   },
   "devDependencies": {
