@@ -2,7 +2,6 @@ const {
   createClient: createRedisClient,
   cacheAsideFunc,
 } = require('./redis')
-const { isPromise } = require('./promise')
 const {
   createStore: createInAppStore,
   remove: removeInApp,
@@ -71,15 +70,13 @@ const create = ({ inAppStore, redisReplicaClient, redisMasterClient }) => {
   }
 
   const redisCacheOnlyReadThrough = async ({ funcWoArgs, key, ttlMs }) => {
-    let cached = redisCacheReadThrough({
+    const cached = await redisCacheReadThrough({
       func: funcWoArgs,
       key,
       ttlMs,
       inAppTtlMs: 0,
     })()
-    if (isPromise(cached)) {
-      cached = await cached
-    }
+
     removeInApp(inAppStore)(key)
     return cached
   }
