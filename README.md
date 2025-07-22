@@ -4,4 +4,4 @@
 ## release flow
 - update/change source code
 - increase semver in `package.json`
-- run `npm run release`
+- create release (then package auto created via CD)
