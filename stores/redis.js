@@ -169,9 +169,9 @@ const hGetAll = (unmarshallFunc) => async ({ client, key }) => {
 const getOrSetWithOptimisticLock = ({ marshallFunc, unmarshallFunc }) => async ({ client, funcWoArgs, key, ttlMs }) => {
   // Implementation for Redis v5 optimistic locking
   // Uses a single-attempt pattern that throws on conflict (for test compatibility)
-  
+
   await client.watch(key)
-  
+
   try {
     let value = await get(unmarshallFunc)({ client, key })
     if (value != null) {
@@ -187,12 +187,12 @@ const getOrSetWithOptimisticLock = ({ marshallFunc, unmarshallFunc }) => async (
     await set(marshallFunc)({ client: multi, key, value, ttlMs })
 
     const result = await multi.exec()
-    
+
     // In Redis v5, exec() returns null if WATCH condition was violated
     if (result === null) {
       throw new Error("One (or more) of the watched keys has been changed")
     }
-    
+
     return value
   } catch (error) {
     // Ensure we unwatch on any error
@@ -278,19 +278,20 @@ const cacheAsideFunc = ({
 }
 
 // TODO: get client per key, when run in cluster mode
-const createClient = ({ host = 'localhost', port = 6379, tls = false, ttl = 3600, maxEntries = 500 }) => {
+const createClient = ({
+  host = 'localhost',
+  port = 6379,
+  tls = false,
+  clientSideCache,
+}) => {
   return redis.createClient({
     socket: {
       host,
       port,
       tls
     },
-    RESP: 3,
-    clientSideCache: {
-      ttl, // Time-to-live (0 = no expiration)
-      maxEntries, // Maximum entries (0 = unlimited)
-      evictPolicy: 'LRU', // Eviction policy: "LRU" or "FIFO"
-    },
+    RESP: clientSideCache ? 3 : 2, // must be RESP v3 for client-side cache
+    clientSideCache,
   })
 }
 
